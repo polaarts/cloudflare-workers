@@ -1,0 +1,12 @@
+name = "primera-meetup-jschile"
+main = "src/index.ts"
+compatibility_date = "2024-03-03"
+
+# Definimos el Worker como productor de mensajes
+[[queues.producers]]
+binding = "PROCESS_QUEUE"
+queue = "primer-meetup-jschile-queue"
+
+# Definimos el Worker como consumidor de esos mismos mensajes
+[[queues.consumers]]
+queue = "primer-meetup-jschile-queue"
