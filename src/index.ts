@@ -1,38 +1,66 @@
-export interface Env {
-  // Enlazamos nuestra cola desde el archivo de configuración
-  PROCESS_QUEUE: Queue;
+import { handleSearch } from "./cache";
+import { rateLimit } from "./middleware";
+import type { Env } from "./types";
+
+export type { Env };
+
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
 }
 
 export default {
-  // 1. Manejador HTTP: Intercepta peticiones entrantes
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    if (request.method !== "POST") {
-       return new Response("Por favor, envía un POST", { status: 405 });
+    const url = new URL(request.url);
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
+      });
     }
 
-    // Simulamos recibir datos de un usuario o evento
-    const payload = await request.json();
+    // Guardar frase
+    if (url.pathname === "/api/phrases" && request.method === "POST") {
+      let body: { text?: string };
+      try {
+        body = await request.json<{ text?: string }>();
+      } catch {
+        return jsonResponse({ error: "Body JSON inválido" }, 400);
+      }
 
-    // 2. Enviamos el mensaje a Cloudflare Queues
-    // Esto es instantáneo, liberando al cliente de inmediato
-    await env.PROCESS_QUEUE.send(payload);
+      const text = body.text?.trim();
+      if (!text) {
+        return jsonResponse({ error: "El campo 'text' es obligatorio y no puede estar vacío" }, 400);
+      }
 
-    return new Response(JSON.stringify({ 
-      status: "success", 
-      message: "¡Tarea enviada a la cola en el Edge!" 
-    }), {
-      headers: { "Content-Type": "application/json" },
-    });
+      await env.jschile_phrases.prepare("INSERT INTO phrases (text) VALUES (?)")
+        .bind(text)
+        .run();
+
+      return jsonResponse({ status: "ok", message: "¡Frase guardada!" });
+    }
+
+    // Rate limit + Búsqueda con cache
+    if (url.pathname === "/api/search" && request.method === "GET") {
+      const { blocked, remaining, resetAt } = await rateLimit(request, env);
+      if (blocked) return blocked;
+
+      const searchResponse = await handleSearch(request, env, ctx);
+      const finalResponse = new Response(searchResponse.body, searchResponse);
+      finalResponse.headers.set("X-RateLimit-Remaining", String(remaining));
+      finalResponse.headers.set("X-RateLimit-Reset", String(resetAt));
+      return finalResponse;
+    }
+
+    return jsonResponse({ error: "Ruta no encontrada" }, 404);
   },
-
-  // 3. Manejador de Colas: Procesa tareas en segundo plano
-  async queue(batch: MessageBatch<any>, env: Env): Promise<void> {
-    for (const message of batch.messages) {
-      // Aquí ejecutaríamos tareas pesadas: base de datos, emails, scrapers, etc.
-      console.log("Procesando tarea en background:", message.body);
-      
-      // Marcamos el mensaje como completado
-      message.ack();
-    }
-  }
 };
